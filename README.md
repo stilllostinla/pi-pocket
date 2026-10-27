@@ -68,6 +68,8 @@ While it runs: **q** quit · **r** restart server · **a** change access · **o*
 
     Lancet Guard may not load on Android. If it is on but fails, start with `PI_POCKET_GUARD=off`.
 
+    To start Pi Pocket at boot with a wake lock (and bring the setup to a new phone with this repo), see [docs/termux-boot.md](docs/termux-boot.md): copy `contrib/termux-boot/start-pi-pocket.sh` to `~/.termux/boot/`.
+
 ## Remote access
 
 Choose a mode in the launcher, or pass `--access`:
