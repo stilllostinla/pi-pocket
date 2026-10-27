@@ -1,0 +1,9 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# runit/termux-services service for Pi Pocket (:8788).
+# termux-services restarts this automatically when it crashes.
+# Install: ln -s "$HOME/pi-pocket/contrib/termux-services/pi-pocket" "$PREFIX/var/service/pi-pocket"
+exec 2>&1
+export PATH="/data/data/com.termux/files/usr/bin:$HOME/.local/bin:$PATH"
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+cd "$HOME/pi-pocket" || exit 1
+exec npm start -- --port 8788

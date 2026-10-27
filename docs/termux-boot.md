@@ -26,6 +26,14 @@ Pi Pocket on port 8788 if it is not already answering there.
    termux-wake-lock
    npm start -- --port 8788
    ```
+5. Optional, recommended: enable crash restarts and restore your data:
+   ```bash
+   pkg install -y termux-services sqlite
+   ln -s ~/pi-pocket/contrib/termux-services/pi-pocket $PREFIX/var/service/pi-pocket
+   service-daemon start && sv up pi-pocket
+   git clone https://github.com/stilllostinla/pi-pocket-backup.git ~/pi-pocket-backup
+   # copy instance/* back to ~/.pi-pocket while the server is stopped, then start it
+   ```
 
 Reboot to test: `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8788/`
 should print `200`, and `~/.pi-pocket/boot.log` gets one `=== boot ... ===`
@@ -40,6 +48,39 @@ block per boot.
 - Termux:Boot runs every file in `~/.termux/boot/` in sorted order. Keep logs
   out of that folder (this script logs to `~/.pi-pocket/boot.log`), so the
   logger output is never executed as a script.
-- Files in `~/.termux/boot/` are outside this repo and do not transfer with
-  `git clone`. The copy in `contrib/termux-boot/` is the backup: copy it back
-  as in step 3 on each new phone.
+## Crash restarts (termux-services)
+
+Termux:Boot only starts the server once. For restarts on crash, the repo
+ships a supervised service in [`contrib/termux-services/pi-pocket/`](../contrib/termux-services/pi-pocket/)
+(`run` + `log/run` via `svlogger`, same layout as the `sshd` service):
+
+```bash
+pkg install -y termux-services
+ln -s ~/pi-pocket/contrib/termux-services/pi-pocket $PREFIX/var/service/pi-pocket
+termux-wake-lock
+service-daemon start
+sv up pi-pocket
+sv status pi-pocket   # should print: run: pi-pocket: (pid N) ...
+```
+
+The service definition is a symlink into this repo, so it travels with
+`git` like everything else. The boot script above already prefers this
+supervised path and only falls back to a one-shot `npm start` when the
+supervisor is missing. Logs go to `$PREFIX/var/log/sv/pi-pocket/`.
+
+## Full-instance backup (private repo)
+
+Code is backed up by pushing this repo. The database, settings, and
+uploads live outside it in `~/.pi-pocket`, so the repo also ships
+[`contrib/backup/backup.sh`](../contrib/backup/backup.sh): a consistent
+`sqlite3 .backup` snapshot plus configs, extensions, themes, gallery, and
+boot scripts, pushed to a **private** backup repo
+(`pi-pocket-backup`). Install and run it with:
+
+```bash
+ln -s ~/pi-pocket/contrib/backup/backup.sh ~/.local/bin/pi-pocket-backup
+pi-pocket-backup
+```
+
+The backup repo must stay private: it holds the owner token, API keys,
+and session contents. Never push `~/.pi-pocket` to the public code repo.
