@@ -2,12 +2,14 @@
 // into one line that opens into a timeline), then Pi's reply, any approval, and the live line while Pi works.
 import { Component } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { activityOpen } from "./activity-fold.js";
 import { initials, personColor } from "./avatar.js";
 import { routeSliding } from "./back.js";
 import { browserAvailable, setBrowserOpen } from "./browser.js";
 import { describeCall, describersRevision } from "./calls.js";
 import { DiffBlock } from "./diff.js";
 import { LinkedSessions } from "./linked-sessions.js";
+import { splitQuote } from "./quote-text.js";
 import { fromServer } from "./seen.js";
 import { defineItem, slotItems, slotKey } from "./slots.js";
 import { Highlighted, InlineArtifact } from "./rich.js";
@@ -69,7 +71,7 @@ const NEXT_REPORT = /\n\n(?=\[subagent \S+ (?:answered|failed))/;
 
 /**
  * A background task's message to Pi (`background.ts`): its head line, its command, and the end of its output fenced.
- * Its time is short ("2m 4s"), which keeps a long line that is not one quick to turn down.
+ * Its time is short ("2m 04s"), which keeps a long line that is not one quick to turn down.
  */
 const BACKGROUND =
     /^\[background\] Task (\S+) (.+?) after ([^.\n]{1,20})\.\nCommand: (.*)\n([\s\S]*)$/;
@@ -469,7 +471,7 @@ function UserEntry({ entry, view, users }) {
                         ${
                             via
                                 ? html`<${FencedText} text=${body} />`
-                                : html`<${MentionedText} text=${skill ? skill[3] : body} />`
+                                : html`<${QuotedText} text=${skill ? skill[3] : body} />`
                         }
                     </div>`
                 }
@@ -510,6 +512,17 @@ function UserEntry({ entry, view, users }) {
             </div>
         </div>
     </div>`;
+}
+
+function QuotedText({ text }) {
+    const quote = splitQuote(text);
+
+    if (!quote) {
+        return html`<${MentionedText} text=${text} />`;
+    }
+
+    return html`<blockquote class="reply-quote" data-part="reply-quote">${quote.passage}</blockquote>
+        ${quote.rest && html`<${MentionedText} text=${quote.rest} />`}`;
 }
 
 function Collapsible({ text, limit = 600 }) {
@@ -905,6 +918,8 @@ function ToolStep({
             setFull({ call: fullCall ?? call, result: fullResult });
         });
 
+    // An image a read returned is already on screen elsewhere: it shows only when the call is opened.
+    const imagesInside = call.name === "read";
     let body = null;
 
     if (open) {
@@ -925,6 +940,16 @@ function ToolStep({
                 >
                     Open ${args.path.split("/").pop()} →
                 </button>`,
+            );
+        }
+
+        if (imagesInside && result?.images > 0) {
+            parts.push(
+                html`<${EntryImages}
+                    entryId=${result.id}
+                    count=${result.images}
+                    label=${`${call.name} image`}
+                />`,
             );
         }
 
@@ -1073,7 +1098,12 @@ function ToolStep({
         memoryAvailable(conversationId)
             ? details.lesson
             : null;
-    const extras = result?.images > 0 || artifact || watch || lesson;
+    const imagesUnder = result?.images > 0 && !imagesInside;
+    const answers =
+        call.name === "ask" && !result?.isError && Array.isArray(details?.answers)
+            ? details.answers
+            : null;
+    const extras = imagesUnder || artifact || watch || lesson || answers;
 
     return html`<div
         class=${`step ${open ? "open" : ""} ${settled ? "settled" : ""}`}
@@ -1128,12 +1158,13 @@ function ToolStep({
         ${
             extras &&
             html`<div class="step-extras" data-part="step-detail">
+                ${answers && html`<${AskAnswers} answers=${answers} />`}
                 ${
                     lesson &&
                     html`<${LessonCall} lessonId=${lesson} conversationId=${conversationId} />`
                 }
                 ${
-                    result?.images > 0 &&
+                    imagesUnder &&
                     html`<${EntryImages}
                         entryId=${result.id}
                         count=${result.images}
@@ -1249,7 +1280,8 @@ function GroupTime({ id, start, end, live }) {
 /**
  * Pi's thinking and tool calls between two of its words, as one line: what they did, and how long they took. It opens
  * into a timeline, a line per call, each drawn again only when what it shows changes. Open while it is live or in the
- * newest turn, closed before, unless opened or closed by hand.
+ * newest turn, closed before, unless opened or closed by hand; Appearance's Keep activity folded starts every group
+ * closed.
  */
 function ActivityGroup({
     item,
@@ -1277,20 +1309,25 @@ function ActivityGroup({
         keep(wholeGroups, id, true);
     }
 
-    const chosen = openedGroups.get(id);
     const all = item.before.length === 0 ? item.steps : [...item.before, ...item.steps];
     // A thought alone is the group's own line, not a step under a line that says the same: it opens to its words,
     // which stay folded until asked for, as a thought on the timeline does.
     const lone = all.length === 1 && all[0].block.type === "thinking" ? all[0] : null;
     // Show thinking on: thoughts show their words once written.
     const reading = prefs().showThinking === true;
-    // A thought whose words have not come yet (`partial`, as a session opens) opens once they have.
-    const open =
-        !lone?.block.partial &&
-        (chosen ??
-            (lone
-                ? reading && !lone.streaming && Boolean(lone.block.text?.trim())
-                : live || newest));
+    const open = activityOpen({
+        chosen: openedGroups.get(id),
+        lone: lone && {
+            partial: lone.block.partial,
+            streaming: lone.streaming,
+            text: lone.block.text,
+        },
+        live,
+        newest,
+        reading,
+        // Appearance's Keep activity folded.
+        fold: prefs().foldActivity === true,
+    });
     // Calls that failed, said on the line too: folded, "edited 1" alone would read as done. A call someone denied did
     // not fail, nor a script stopped by a denial: its line says who denied it.
     const failed = all.filter((step) => {
@@ -1544,15 +1581,76 @@ function stepLive(step, results, slots, approvals, busy) {
     return status === "running" || status === "approval";
 }
 
-/**
- * A question for the person Pi works for, from an extension (`host.ask`): its fields, sent only by that person, and
- * declined by anyone who can steer. What is typed goes to the extension that asked, never to Pi or into the transcript.
- */
+function AskChoices({ field, chosen, busy, onChange }) {
+    const { picked, other } = chosen;
+
+    const pick = (label) => {
+        const on = picked.includes(label);
+        const next = field.multiple
+            ? on
+                ? picked.filter((each) => each !== label)
+                : [...picked, label]
+            : [label];
+
+        onChange({ picked: next, other: "" });
+    };
+
+    return html`<fieldset class="ask-choices" disabled=${busy}>
+        <legend class="ask-question">
+            ${field.header && html`<span class="ask-header">${field.header}</span>`}
+            <span>${field.label}</span>
+            ${field.multiple && html`<span class="ask-hint">Choose one or more</span>`}
+        </legend>
+        <div class="ask-options">
+            ${field.choices.map(
+                (choice) => html`<button
+                    type="button"
+                    class="ask-option"
+                    key=${choice.label}
+                    aria-pressed=${picked.includes(choice.label)}
+                    onClick=${() => pick(choice.label)}
+                >
+                    <span class="ask-option-label">${choice.label}</span>
+                    ${choice.description && html`<span class="ask-option-text">${choice.description}</span>`}
+                </button>`,
+            )}
+        </div>
+        ${
+            field.other &&
+            html`<input
+                class="ask-other"
+                type="text"
+                aria-label=${`Your own answer to: ${field.label}`}
+                placeholder=${field.placeholder ?? "Or type your own answer"}
+                value=${other}
+                onInput=${(event) => onChange({ picked: [], other: event.currentTarget.value })}
+            />`
+        }
+    </fieldset>`;
+}
+
+function choiceValue(field, { picked, other }) {
+    if (other.trim() !== "") {
+        return other;
+    }
+
+    return field.choices
+        .map((choice) => choice.label)
+        .filter((label) => picked.includes(label))
+        .join("\n");
+}
+
+/** Sent only by that person, and declined by anyone who can steer. Only the `ask` tool passes what is typed on to Pi. */
 function AskCard({ approval }) {
     const { me, users } = store.state;
     const form = approval.form;
     const [values, setValues] = useState(() =>
-        Object.fromEntries(form.fields.map((field) => [field.name, ""])),
+        Object.fromEntries(
+            form.fields.map((field) => [
+                field.name,
+                field.choices ? { picked: [], other: "" } : "",
+            ]),
+        ),
     );
     const [busy, setBusy] = useState(false);
     const owner = users?.find?.((each) => each.role === "owner")?.id;
@@ -1560,11 +1658,19 @@ function AskCard({ approval }) {
     const who =
         users?.find?.((each) => each.id === approval.requestedBy)?.name ??
         "the person Pi works for";
-    const ready = form.fields.every((field) => values[field.name] !== "");
+    const typed = Object.fromEntries(
+        form.fields.map((field) => [
+            field.name,
+            field.choices ? choiceValue(field, values[field.name]) : values[field.name],
+        ]),
+    );
+    const ready = form.fields.every((field) => typed[field.name] !== "");
+    // Only a card of plain fields hides what is typed from Pi: the `ask` tool's answers are for Pi.
+    const plain = form.fields.some((field) => !field.choices);
 
     const answer = (allow) => {
         setBusy(true);
-        attempt(() => actions.approve(approval.id, allow, allow ? values : undefined)).finally(() =>
+        attempt(() => actions.approve(approval.id, allow, allow ? typed : undefined)).finally(() =>
             setBusy(false),
         );
     };
@@ -1589,25 +1695,36 @@ function AskCard({ approval }) {
         </div>
         ${
             mine
-                ? html`${form.fields.map(
-                      (field) => html`<label class="ask-field" key=${field.name}>
-                          <span>${field.label}</span>
-                          <input
-                              type=${field.secret ? "password" : "text"}
-                              name=${field.name}
-                              value=${values[field.name]}
-                              placeholder=${field.placeholder ?? ""}
-                              autocomplete=${field.autocomplete ?? "off"}
-                              autocapitalize="off"
-                              spellcheck="false"
-                              disabled=${busy}
-                              onInput=${(event) =>
-                                  setValues({ ...values, [field.name]: event.currentTarget.value })}
-                          />
-                      </label>`,
+                ? html`${form.fields.map((field) =>
+                      field.choices
+                          ? html`<${AskChoices}
+                                key=${field.name}
+                                field=${field}
+                                chosen=${values[field.name]}
+                                busy=${busy}
+                                onChange=${(chosen) => setValues({ ...values, [field.name]: chosen })}
+                            />`
+                          : html`<label class="ask-field" key=${field.name}>
+                                <span>${field.label}</span>
+                                <input
+                                    type=${field.secret ? "password" : "text"}
+                                    name=${field.name}
+                                    value=${values[field.name]}
+                                    placeholder=${field.placeholder ?? ""}
+                                    autocomplete=${field.autocomplete ?? "off"}
+                                    autocapitalize="off"
+                                    spellcheck="false"
+                                    disabled=${busy}
+                                    onInput=${(event) =>
+                                        setValues({
+                                            ...values,
+                                            [field.name]: event.currentTarget.value,
+                                        })}
+                                />
+                            </label>`,
                   )}
                   ${
-                      form.fields.length > 0 &&
+                      plain &&
                       html`<div class="muted small">
                           What you type goes to the page or tool that asked. Pi does not see it.
                       </div>`
@@ -1629,6 +1746,20 @@ function AskCard({ approval }) {
             </div>`
         }
     </form>`;
+}
+
+function AskAnswers({ answers }) {
+    return html`<dl class="ask-answers">
+        ${answers.map(
+            (each, at) => html`<div class="ask-answer" key=${at}>
+                <dt>
+                    <span class="ask-header">${each.header}</span>
+                    <span>${each.question}</span>
+                </dt>
+                <dd>${each.answer}</dd>
+            </div>`,
+        )}
+    </dl>`;
 }
 
 /** What someone did with a call that waited for them: an ask (`host.ask`) is answered or declined. */
@@ -2368,6 +2499,8 @@ function Items({ items, results, slots, approvals, busy, past = false, conversat
             conversationId,
             after,
             prefs().showThinking === true,
+            // Keep activity folded: a group drawn before the switch moved opens or folds with it.
+            prefs().foldActivity === true,
         ];
 
         // The calls before the rows shown count in the group's line: their results, for its time.
