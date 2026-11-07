@@ -2165,7 +2165,8 @@ defineItem("status", {
         prefs().speed === true && html`<${SpeedPart} stats=${store.state.view.stats ?? {}} />`,
 });
 
-/** How full the context is: `{ used, window, percent, about }`, or null with no context window known. */
+/** How full the context is: `{ used, window, percent, about, k }`, or null with no context window known.
+ * `k` is the used context in thousands of tokens, on a 1-200 scale where 200 means 200000 tokens. */
 function contextFill() {
     const { view } = store.state;
     const window = view.agent?.contextWindow;
@@ -2180,13 +2181,27 @@ function contextFill() {
         used,
         window,
         percent: Math.min(100, Math.round((used / window) * 100)),
+        k: Math.round(used / 1000),
         // Compacted since the last answer: what is left, estimated until the next answer measures it.
         about: view.stats?.contextEstimated ? "~" : "",
     };
 }
 
-const contextTitle = ({ used, window, about }) =>
-    `${about}${formatTokens(used)} of ${formatTokens(window)} tokens in context`;
+/** The meter color: the percent of the model's window, plus an absolute warning at 200000 tokens. */
+function contextMeterLevel(fill) {
+    if (fill.used >= 200_000) {
+        return "err";
+    }
+
+    if (fill.used >= 170_000) {
+        return "warn";
+    }
+
+    return contextLevel(fill.percent);
+}
+
+const contextTitle = ({ used, window, about, k }) =>
+    `${about}${formatTokens(used)} of ${formatTokens(window)} tokens in context (${k}/200k)`;
 
 defineItem("status", {
     id: "core:context",
@@ -2199,10 +2214,10 @@ defineItem("status", {
             fill &&
             html`<span class="context" title=${contextTitle(fill)}>
                 <span class="word">context</span>
-                <span class=${`meter ${contextLevel(fill.percent)}`} aria-hidden="true">
+                <span class=${`meter ${contextMeterLevel(fill)}`} aria-hidden="true">
                     <span style=${`width:${fill.percent}%`}></span>
                 </span>
-                <span class="num">${fill.about}${fill.percent}%</span>
+                <span class="num">${fill.about}${fill.k}/200 · ${fill.percent}%</span>
             </span>`
         );
     },
